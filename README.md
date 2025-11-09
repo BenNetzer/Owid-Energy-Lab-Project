@@ -5,12 +5,6 @@ Together with **Omri Halevy**, we analyzed global and regional energy trends to 
 
 ---
 
-## Quick view
-**HTML report:**  
-[View the full report]([https://BenNetzer.github.io/OWID-Energy-Lab-Project/Lab_1_Halevy_Omri_and_Netzer_Ben.html](https://bennetzer.github.io/Owid-Energy-Lab-Project/))
-
----
-
 ## Files
 - `Lab_1_Halevy_Omri_and_Netzer_Ben.html` – final report (best for viewing)
 - `Lab_1_Halevy_Omri_and_Netzer_Ben.Rmd` – source R Markdown 
