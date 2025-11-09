@@ -14,8 +14,7 @@ Together with **Omri Halevy**, we analyzed global and regional energy trends to 
 ## Files
 - `Lab_1_Halevy_Omri_and_Netzer_Ben.html` – final report (best for viewing)
 - `Lab_1_Halevy_Omri_and_Netzer_Ben.Rmd` – source R Markdown 
-- Download the csv files in Order to get our data. 
-
+- Additional csv files with our data. 
 ---
 
 ## Reproduce
