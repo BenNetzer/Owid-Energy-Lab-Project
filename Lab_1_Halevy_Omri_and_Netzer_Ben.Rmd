@@ -1,0 +1,773 @@
+---
+title: "52414 - lab 1"
+author: "52414"
+output:
+  html_document:
+    theme: united
+    toc: yes
+    tod_depth: 3
+    toc_float: yes
+    df_print: paged
+  pdf_document:
+    toc: yes
+---
+
+# *Lab 1: Basic Data Wrangling and Plotting, Distributions*  
+The only allowed libraries are the following (**please do not add additional libraries without permission from the course staff**):
+```{r setup, echo = TRUE, results = 'hide',  warning=FALSE, message=FALSE,  eval=TRUE}
+rm(list=ls())         # clean R environment
+gc()                  # clean computer memory
+options(scipen=999)   # show numbers in normal format
+
+pacman::p_load(       # install if needed and load libraries
+  tidyverse,          # This includes dplyr, stringr, ggplot2, .. 
+  data.table,         
+  rworldmap,         # world map
+  ggthemes,
+  reshape2,          # melt: change data-frame format long/wide
+  e1071,             # skewness and kurtosis
+  readxl,
+  zoo                #approved by Ori in the course's forum in order to use rollmean
+)
+
+# Define the path and file name
+my_path = "C:/Users/USER/Documents/Lab1R_course/"
+file_name = "owid-energy-data.csv"
+```
+"A good data analyst is a good story teller" - We hope we can find some logic in the data we were provided with and tell an interesting story about what make our world go around.   
+
+# 1. 
+
+We will load the data and show the first 5 rows of it and make sure the columns types are correct.
+
+## A. 
+```{r} 
+# Load the Excel file
+data = read_csv(paste0(my_path, file_name))
+
+# View the first few rows
+head(data,5)
+```
+As can be seen in the first output there are 2 character columns ("country" and "iso_code") and the rest are numeric columns, as we expected.
+The first 5 rows of the data set describe data on the "Association of Southeast Asian Nations" between 2000-2004.
+
+
+We gonna filter Israel's gas consumption for the last 5 years- using pipe 
+
+## B. 
+```{r, message=FALSE}
+israel_gas_last5 = data %>%
+  filter(country == "Israel") %>%
+  arrange(desc(year)) %>%
+  slice_head(n = 5) %>%
+  arrange(year) %>%
+  select(country, year, gas_consumption)
+
+print(israel_gas_last5)
+```
+It seems that between 2019 and 2023, the last five years for which we have data, gas consumption in Israel grew each year at an almost steady pace.
+
+## C.
+we want to look at the data set in a more compact table which is easier to work with. Therefore we change its format to a long table.
+```{r, message=FALSE}
+# Melt the data
+long_data = melt(data,
+                  id.vars = c("country", "year"),
+                  measure.vars = c("gas_consumption", "coal_consumption", "hydro_consumption"),
+                  variable.name = "Source",
+                  value.name = "Source_cons")
+
+# Filter and show the 5 rows with lowest non-zero consumption
+lowest_nonzero = long_data %>%
+  filter(Source_cons > 0) %>%
+  arrange(Source_cons) %>%
+  slice_head(n = 5)
+
+print(lowest_nonzero)
+```
+As requested, we now have a new table with more rows but only four columns.
+Each original row has been split into multiple entries for each source. 
+The table includes the following dimensions: country, year, and source and a calculation column - Source_cons which represent how much of the source was consumed.
+
+
+# 2.
+
+We will create a new data frame of the relevant columns, order it by the 2023 order and then plot the data.
+
+## A.
+
+### I 
+getting the relevant column names list
+```{r, message=FALSE}
+# Get the names of all columns in the data frame
+cols_names = names(data)
+
+# Filter columns that end with "_consumption" (all consumption-related columns)
+consumption_cols = grep("_consumption$", cols_names, value = TRUE)
+
+# List of columns to exclude (aggregated consumption columns)
+exclude_cols = c("primary_energy_consumption", "renewables_consumption", 
+                 "low_carbon_consumption", "fossil_fuel_consumption")
+
+# Remove the excluded columns from the list of all consumption columns
+relevant_cols = setdiff(consumption_cols, exclude_cols)
+
+# Convert to long format
+long_energy = melt(data,
+                   id.vars = c("country", "year"),
+                   measure.vars = relevant_cols,
+                   variable.name = "Source",
+                   value.name = "Consumption_TWH")
+```
+
+### II 
+creating a long df and ordering it based on 2023 usage
+```{r, message=FALSE}
+# Global sum per year and source (no country dim)
+global_energy = long_energy %>%
+  group_by(year, Source) %>%
+  summarise(Consumption_TWH = sum(Consumption_TWH, na.rm = TRUE), .groups = "drop")
+
+# getting the sources order based on 2023 usage (lowest at top, highest at bottom)
+order_2023 = global_energy %>%
+  filter(year == 2023) %>%        
+  arrange(Consumption_TWH) %>%    # sort sources by total consumption in ascending order
+  pull(Source)                    # extract the "Source" column as a vector
+
+# order the columns based on the order_2023
+global_energy$Source = factor(global_energy$Source, levels = order_2023) 
+```
+
+### III 
+ploting the data
+```{r, warning=FALSE} 
+# Plot total consumption
+ggplot(global_energy, aes(x = year, y = Consumption_TWH, color = Source)) +
+  geom_line(linewidth = 1) +
+  scale_x_continuous(limits = c(1965, 2023), breaks = seq(1965, 2023, by = 5)) +
+  scale_y_continuous(labels = scales::label_number(scale = 1e-3, suffix = "k")) +
+  theme_minimal() +
+  labs(title = "Global Energy Consumption by Source",
+       x = "Year",
+       y = "Consumption (TWH)",
+       color = "Source")
+```
+
+We see that oil is the most used energy source, followed by coal and gas. These three sources are by far the largest ones. Data prior to 1965 is not shown, as consumption records before that year are missing from the dataset.
+we can see that there is an almost liner increase in the consumption of each source. 
+Also we can notice a major increase in the consumption of the 'greener' sources around the year 2000, due to the increasing awareness to the climae changes.
+
+
+## B.
+### I 
+creating the data set - computing the share of each source out of the yearly consumption.
+```{r, echo=TRUE, include=TRUE, message=FALSE}
+# filter data from 1975 and compute the total consumption in each year
+total_per_year = global_energy %>%
+  filter(year >= 1975) %>%
+  group_by(year) %>%
+  summarise(Total = sum(Consumption_TWH, na.rm = TRUE), .groups = "drop")
+
+# join the tables and compute the share for each source
+energy_share = global_energy %>%
+  filter(year >= 1975) %>%
+  inner_join(total_per_year, by = "year") %>%
+  mutate(Share = Consumption_TWH / Total)
+```
+### II
+ploting the data
+```{r, message=FALSE}
+ggplot(energy_share, aes(x = year, y = Share, color = Source)) +
+  geom_line(linewidth = 1) +
+  scale_x_continuous(limits = c(1975, 2023), breaks = seq(1975, 2023, by = 5)) +
+  scale_y_continuous(labels = scales::label_percent()) +
+  theme_minimal() +
+  labs(title = "Global Energy Share by Source",
+       x = "Year",
+       y = "Share of Total Energy (%)",
+       color = "Source")
+```
+
+The graph shows the share of each source out of the yearly energy consumption. each source is shown in a different line and color.
+There is a clear and interesting trend showing that oil’s share of total energy consumption has been declining since around 1980. It fell from nearly 50% in 1975 to about 40% within a decade. By 2023, oil’s share has stabilized at roughly 30%. This decline has been offset by growth in other energy sources: gas, nuclear and in the last years 'greener' sources who all have positive increase in their share.
+
+
+# 3.
+## A
+### I 
+finding the top and bottom three in `per_capita_electricity` at 2023
+```{r, message=FALSE}
+# exclude aggregates and regions
+per_capita_2023 = data %>%
+  filter(year == 2023,
+         !is.na(per_capita_electricity),
+         per_capita_electricity > 0,
+         !str_detect(country, "World|income|region|OECD|Asia|Africa|Europe|America|Oceania"))
+
+# get top and bottom 3 country names only
+bottom3 = per_capita_2023 %>%
+  arrange(per_capita_electricity) %>%
+  slice_head(n = 3) %>%
+  arrange(desc(per_capita_electricity)) %>%  # flip order
+  pull(country)
+
+top3 = per_capita_2023 %>%
+  arrange(desc(per_capita_electricity)) %>%
+  slice_head(n = 3) %>%
+  pull(country)
+
+country_order = c(top3, "World", bottom3)
+selected_countries = c(top3, bottom3, "World")
+```
+
+### II
+getting & ploting the data for the 6 countries we found and the 'world' agg. 
+```{r, message=FALSE}
+# filter the data after 1980
+time_series = data %>%
+  filter(year > 1980, 
+         country %in% selected_countries,
+         !is.na(energy_per_capita)) %>%
+  mutate(country = factor(country, levels = country_order)) %>%
+  select(country,year,energy_per_capita)
+
+# line plot
+p1 = ggplot(time_series, aes(x = year, y = energy_per_capita, color = country)) +
+  geom_line(linewidth = 1) +
+  theme_minimal() +
+  labs(title = "Per Capita Electricity Over Time", y = "Electricity (kWh)", x = "Year")
+
+# same plot with log scale
+p2 = p1 + scale_y_log10() +
+  labs(title = "Per Capita Electricity Over Time (Log Scale)")
+
+p1
+p2
+```
+
+We personally prefer the log version. It makes it much easier to spot trends in the bottom three countries, which were previously squashed down and were impossible to notice. On the other hand, using the log scale also reduces the apparent impact in top countries. For example, Iceland’s electricity use per capita grew significantly between 2000 to 2010, but with the log scale, that growth is much harder to notice - Maybe using a dual-axis graph for top and bottom could give us the best of both worlds.
+
+## B
+### I
+loading the income data and cleaning it to include only the 2 columns are interested in 
+```{r, include=FALSE}
+income_data = read_excel("current_classification_by_income.xlsx") %>%
+  rename_all(tolower) %>%
+  select(country = economy, income_group = `income group`) # select and rename the columns
+```
+
+### II
+Joining between the data sets and filtering it to include only data from 2021
+```{r, message=FALSE}
+# Inner join - We cant classify by income countries that don't have income data so no need for left join
+data_income = data %>%
+  inner_join(income_data, by = "country") 
+
+data_2021 = data_income %>%
+  filter(year == 2021,
+         !is.na(energy_per_capita),
+         !is.na(income_group),#even with the inner join we still had null values because not all countries have income_group
+         energy_per_capita > 0)
+```
+
+### III
+creating the boxplot and extracting the outliers 
+```{r, message=FALSE}
+income_order = c("High income", "Upper middle income", "Lower middle income", "Low income")
+
+data_2021 = data_2021 %>%
+  mutate(income_group = factor(income_group, levels = income_order)) %>%
+  select(country, income_group, energy_per_capita)
+
+# Create the boxplot with log scale
+p = ggplot(data_2021, aes(x = income_group, y = log10(energy_per_capita))) +
+  geom_boxplot(outlier.colour = "red") +
+  theme_minimal() +
+  labs(title = "Log Energy Per Capita by Income Group (2021)", 
+       y = "Log10(Energy Per Capita)", x = "Income Group")
+p
+```
+
+### IIII
+Extract the outliers from the boxplot
+```{r, message=FALSE}
+boxplot_data = boxplot(data_2021$energy_per_capita ~ data_2021$income_group, plot = FALSE)
+outliers = boxplot_data$out
+
+# Identify which energy values are outliers
+outlier_countries = data_2021 %>%
+  filter(energy_per_capita %in% outliers) %>%
+  mutate(log_energy_per_capita = round(log10(energy_per_capita),3), round_energy_per_capita = round(energy_per_capita)) %>%
+  select(country, income_group, round_energy_per_capita, log_energy_per_capita) %>%
+  arrange(desc(round_energy_per_capita))
+
+outlier_countries
+```
+
+We decided to use the log scale for the reasons mentioned earlier and after some trial and error. When we tried both options, we found that without the log scale, almost all income groups except for "high" were compressed and became nearly invisible in the chart.
+
+Many of the upper outliers are high-income countries with abundant energy resources like oil and gas (e.g. Qatar, UAE, Bahrain), or are known for energy-intensive industries (e.g. Iceland). These countries are small but wealthy, which helps explain their high energy use per person. More surprisingly, countries like Bhutan and Lebanon—classified as lower-middle income—also appear as upper outliers, possibly due to large hydropower production (Bhutan) or regional gas deal in 2020 (Lebanon). At the low-income level, Sudan and Mozambique are still upper outliers within their group, showing unusually high energy consumption relative to peers, though their absolute values remain far below global levels.
+also It's a bit surprising that no lower outliers were identified.
+
+One more thing we can see in the graph is that there is a clear positive trend between a country income and its energy consumption.
+
+## C
+We will calculate the 2022 GDP per capita and run a linear regression to predict energy use per capita based on GDP per capita.
+
+```{r, warning=FALSE}
+# Calculate GDP per capita for 2022
+data_2022 = data %>%
+  filter(year == 2022,
+         !is.na(population),
+         !is.na(gdp),
+         population > 0) %>%
+  mutate(gdp_per_capita = gdp / population) %>%
+  select (country,year,energy_per_capita,gdp_per_capita,gdp,population)
+
+# Fit a linear regression model
+model = lm(energy_per_capita ~ gdp_per_capita, data = data_2022)
+
+# Summary of the model to interpret the results
+summary(model)
+
+# Scatter plot with the regression line
+ggplot(data_2022, aes(x = gdp_per_capita, y = energy_per_capita)) +
+  geom_point(color = "firebrick") +                                # change point color
+  geom_smooth(method = "lm", color = "purple", se = FALSE) +  # change line color
+  labs(title = "Energy Per Capita vs GDP Per Capita (2022)", 
+       x = "GDP per Capita", y = "Energy Per Capita") +
+  theme_minimal()
+```
+
+The results showed a statistically significant positive relationship, with a slope of 1.35 and a very small p-value. This means that for every $1 increase in GDP per capita, energy use per capita is expected to increase by 1.35 kWh. The intercept of -640 might seem odd at first, but it doesn’t really have practical meaning since there are no countries with a GDP per capita of zero.
+
+The R-squared value is 0.614, which means about 61% of the variation in energy use per capita can be explained by GDP per capita alone - not bad! But this also mean there is other important factors playing a role in the energy consumption.
+This result makes sense; after all, you’d expect someone living in a Western city to use more energy than someone living in a rural village in Africa.
+
+# 4.
+
+## A
+In this part, we will plot the empirical CDFs for the share of fossil fuels, nuclear, and renewables energy consumption. And compare them across different years.
+```{r, warning=FALSE} 
+# Filter data for years 1982, 2002, 2022
+energy_data = data %>%
+  filter(year %in% c(1982, 2002, 2022),
+         !str_detect(country, "World|income|region|OECD|Asia|Africa|Europe|America|Oceania")) %>%
+  select(country, year, fossil_share_energy, nuclear_share_energy, renewables_share_energy)
+
+# Create a function to plot empirical CDF
+energy_share_ecdf_plot = function(column, title_var) {
+  ggplot(energy_data, aes(x = .data[[column]], color = as.factor(year))) +
+    stat_ecdf(geom = "step", size = 1.05) +
+    labs(
+      title = paste("Empirical CDF of", title_var, "Share in Energy Consumption"),
+      x = paste(title_var, "Share"),
+      y = paste("Proportion of Countries with Equal or Lower\n", title_var, "Share"),
+      color = "Year"
+    ) +
+    scale_color_manual(values = c("red", "navy", "darkgreen")) +
+    scale_y_continuous(labels = scales::label_percent()) +
+    scale_x_continuous(labels = scales::label_number(suffix = "%")) +
+    #coord_flip() +
+    theme_minimal()
+}
+energy_share_ecdf_plot("fossil_share_energy", "Fossil Fuel")
+energy_share_ecdf_plot("nuclear_share_energy", "Nuclear Energy")
+energy_share_ecdf_plot("renewables_share_energy", "Renewables Sources")
+```
+
+For any given value on the x-axis (for example 60%), the y-axis shows the proportion of countries with an energy share less than or equal to that value. This is done using the built in function stat_ecdfstep in ggplot2.
+
+Fossil Fuel's - We can see that as the years go by the graphs are moving to the left, indicating that there is a shift away from fossil fuels — more countries have lower fossil shares. This is consistent with what we know about the renewable energy trend that came into our life in recent decades. 
+
+Nuclear Energy - We can see that there was an increase in its use in 2002 compared to 1982 but by 2022 it decreased again. It could indicate that this source couldn't provide the entire energy required or maybe it mean that contries decided that they do not trust this source enough because of his inherited risk.
+
+Renewable sources -  We can see that they are relatively recent addition to the global energy mix, with significant development only beginning in the past two decades. While renewables are considered clean and align with many countries’ commitments to transition to sustainable energy, they are still not developed enough to serve as the primary energy source in most places. A small number of countries — mainly Scandinavian and other wealthy, developed nations — rely heavily on renewables. However, in most other countries, the share of renewables in total energy consumption remains below 30%.
+
+
+
+## B
+We will create a stacked bar chart comparing the shares of fossil, nuclear, and renewable energy in 2022 for the following countries: Brazil, India, USA, France, China, World, Israel, Sweden. 
+```{r, message=FALSE}
+# Filter data for selected countries and year 2022
+selected_countries = c("Brazil", "India", "United States", "France", "China", "World","Israel", "Sweden")
+energy_2022 = data %>%
+  filter(country %in% selected_countries, year == 2022) %>%
+  select(country, fossil_share_energy, nuclear_share_energy, renewables_share_energy)
+
+# Reshape data for stacked bar chart
+energy_long = energy_2022 %>%
+  gather(key = "energy_type", value = "share", fossil_share_energy, nuclear_share_energy, renewables_share_energy)
+
+# Plot stacked bar chart
+ggplot(energy_long, aes(x = country, y = share, fill = energy_type)) +
+  geom_bar(stat = "identity") +
+  # showing the source share if its above 4% (chose arbitrary an amount ensuring it have enough space in the bar chart)
+  geom_text(
+    data = energy_long %>% filter(share > 4),
+    aes(label = paste0(round(share, 1), "%")),
+    position = position_stack(vjust = 0.5),
+    size = 3, color = "white"
+  ) +
+  labs(title = "Energy Mix for Different Countries (2022)",
+       x = "Country",
+       y = "Share of Energy",
+       fill = "Energy Source") +
+  scale_fill_manual(
+    values = c(
+      "fossil_share_energy" = "firebrick",
+      "nuclear_share_energy" = "steelblue",
+      "renewables_share_energy" = "forestgreen"
+    ),
+    labels = c(
+      "fossil_share_energy" = "Fossil Fuel",
+      "nuclear_share_energy" = "Nuclear Energy",
+      "renewables_share_energy" = "Renewable Sources"
+    )
+  ) +
+  scale_y_continuous(labels = scales::label_number(suffix = "%")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 60, hjust = 0.8))
+```
+
+We see that In 2022, most countries (and the world average) — remained heavily dependent on fossil fuels, with Israel and India above 88% fossil share. In contrast, Sweden and Brazil stood out for their high renewable energy shares, while France led in nuclear usage. The data highlights slow global progress toward cleaner energy, with only a few developed and rich countries showing significant shifts. Among the chosen countries, Israel is the only one without any share of nuclear energy.  
+
+## C
+Now we will focus on the UK and examine how their energy mix changed since 1975, we expect an greener source trend based on their commitment to the Paris Agreement’s goal of increasing green energy to 90% by 2030.
+```{r, warning=FALSE}
+# Filter data for the UK from 1975 onward
+uk_data = data %>%
+  filter(country == "United Kingdom", year >= 1975) %>%
+  arrange(year) %>%
+  select(year, fossil_share_energy, nuclear_share_energy, renewables_share_energy)
+
+# Initialize output vars
+fossil_5y_avg_change = NA
+nuclear_5y_avg_change = NA
+renewables_5y_avg_change = NA
+
+# List of energy sources
+cols = c("fossil_share_energy", "nuclear_share_energy", "renewables_share_energy")
+
+# Loop that calculate each source avg 5y change
+for (col in cols) {
+  diffs = c(NA, diff(uk_data[[col]])) # null for the first year and then using the built in diff() func
+  avg_change = mean(diffs[(nrow(uk_data)-4):(nrow(uk_data))], na.rm = TRUE)
+  
+  if (col == "fossil_share_energy") fossil_5y_avg_change = avg_change
+  if (col == "nuclear_share_energy") nuclear_5y_avg_change = avg_change
+  if (col == "renewables_share_energy") renewables_5y_avg_change = avg_change
+}
+
+
+# Calculate the projections for each energy source
+years_future = 1:7
+future_years = max(uk_data$year) + years_future
+
+# Calculate the projections
+proj_fossil = tail(uk_data$fossil_share_energy, 1) + 
+  years_future * fossil_5y_avg_change
+
+proj_nuclear = tail(uk_data$nuclear_share_energy, 1) + 
+  years_future * nuclear_5y_avg_change
+
+proj_renewables = tail(uk_data$renewables_share_energy, 1) + 
+  years_future * renewables_5y_avg_change
+
+# Combine historical and projected data
+projected_data = data.frame(
+  year = c(uk_data$year, future_years),
+  fossil_share = c(uk_data$fossil_share_energy, proj_fossil),
+  nuclear_share = c(uk_data$nuclear_share_energy, proj_nuclear),
+  renewables_share = c(uk_data$renewables_share_energy, proj_renewables)) %>%
+  mutate(
+    line_style = ifelse(year >= 2024, "predicted_future", "past")
+  )
+
+
+# Plot the projections along with historical data
+ggplot(projected_data, aes(x = year)) +
+  geom_line(aes(y = fossil_share, color = "Fossil", linetype = line_style), size = 1) +
+  geom_line(aes(y = nuclear_share, color = "Nuclear", linetype = line_style), size = 1) +
+  geom_line(aes(y = renewables_share, color = "Renewables", linetype = line_style), size = 1) +
+  geom_vline(xintercept = 2023, linetype = "dashed", color = "black") +
+  geom_hline(yintercept = 95, linetype = "dashed", color = "green") +
+  labs(title = "Projection of UK Energy Mix to 2030 (Paris Agreement Target)",
+       x = "Year",
+       y = "Energy Share",
+       color = "Energy Type",
+       linetype = "Period") +
+  scale_x_continuous(breaks = seq(1975, max(2030), by = 5)) +
+  scale_y_continuous(labels = scales::label_number(suffix = "%")) +
+  scale_linetype_manual(
+    values = c(past = "solid", predicted_future = "dashed"),
+    labels = c(past = "Past", predicted_future = "Predicted Future")) +
+  theme_minimal()
+```
+
+Despite a clear trend of increasing renewables and declining fossil fuels, the 2030 projection shows that ~70% of energy will still come from fossil sources, with only ~30% from green energy, which falls significantly short of the 90% green energy goal, committed by the UK.
+
+
+# 5
+## A
+We will create a faceted area plot to show how the energy mix changes over time by continents. We'll have to filter the data, then calculate relative share of energy sources, and then turning it into a visualization.
+```{r, warning=FALSE}
+# Step 1: Chose relevant regions
+continents <- c("Africa (EI)", "Asia Pacific (EI)", "Europe (EI)",
+                "Middle East (EI)", "North America (EI)", "South and Central America (EI)")
+
+# Step 2: Filter data for selected regions and from 1990 onward
+energy_sources <- data %>%
+  filter(country %in% continents, year >= 1990) %>%
+  mutate(continent = sub(" \\(EI\\)", "", country)) %>%
+  select(continent, year, all_of(relevant_cols))
+
+# Step 4: Use data.table::melt to reshape to long format
+energy_long_1990 <- melt(
+  data = energy_sources,
+  id.vars = c("continent", "year"),
+  variable.name = "source",
+  value.name = "consumption"
+)
+
+# Step 5: Convert to tibble for dplyr/ggplot use
+energy_long_1990 <- as_tibble(energy_long_1990)
+
+# Step 6: Calculate total and relative share per region-year
+energy_long_1990 <- energy_long_1990 %>%
+  group_by(continent, year) %>%
+  mutate(continent_yearly_total = sum(consumption, na.rm = TRUE),
+         continent_yearly_share = ifelse(continent_yearly_total > 0, consumption / continent_yearly_total, NA_real_)) %>%
+  ungroup()
+
+# Step 7: Clean source names for the legend
+energy_long_1990 <- energy_long_1990 %>%
+  mutate(source = source %>%
+           str_remove("_consumption") %>%
+           str_replace_all("_", " ") %>%
+           str_to_title())
+
+# Step 8: Plot with geom_area and facet_wrap
+ggplot(energy_long_1990, aes(x = year, y = continent_yearly_share, fill = source)) +
+  geom_area(color = "black", size = 0.1, alpha = 1) +
+  #geom_area() +
+  facet_wrap(~ continent, ncol = 2) +
+  scale_y_continuous(labels = scales::label_percent()) +
+  labs(
+    title = "Energy Mix by Continent (1990–Present)",
+    subtitle = "Relative share of each energy source within total energy consumption",
+    x = "Year", y = "Share of Total Energy", fill = "Energy Source"
+  ) +
+  theme_minimal() 
+```
+
+The graph shows that developed regions (Europe and North America) have gradually reduced their reliance on coal,
+shifting towards gas and renewable energy, especially since the early 2000s. In contrast, developing regions (Africa, Asia Pacific, and the Middle East) continue to rely heavily on fossil fuels, especially oil and coal, with  minimal growth in renewable energy. 
+Oil consumption decreased in Asia, the Middle East, and South America — regions that are generally less wealthy than Europe and North America. This could suggest that rising oil prices have made oil less accessible, turning it into a luxury that poorer regions can no longer afford. However, this hypothesis isn't fully convincing, as it doesn't explain why Africa did not experience a similar decline.   
+
+
+## B
+We will visualize 2020 global data by mapping nuclear electricity share and per capita energy consumption. This involves filtering the data specifically for 2020, preparing it for mapping, and creating two world maps with fitted scales.  
+```{r, message=FALSE}
+# Filter for the year 2020 and join to the gdp table
+data_2020 <- data %>%
+  filter(year == 2020) %>%
+  select(iso_code, country, nuclear_share_elec, energy_per_capita)
+  
+
+data_2020$nuclear_share_elec[is.na(data_2020$nuclear_share_elec)] <- 0 # Replace NA in nuclear_share_elec with 0
+
+map_data <- joinCountryData2Map(data_2020,                             # Join to map using the built in function
+                                joinCode = "NAME",
+                                nameJoinColumn = "country",
+                                verbose = FALSE)
+```
+
+```{r, message=FALSE}
+# Map 1: Nuclear Share
+map1 <- mapCountryData(map_data,
+                       nameColumnToPlot = "nuclear_share_elec",
+                       mapTitle = "Share of Nuclear in Electricity Production (2020)",
+                       catMethod = "pretty", #  space the breakpoints based on the range of our data
+                       colourPalette = "diverging",
+                       addLegend = TRUE)
+mtext("Share of electricity from nuclear energy (%)", side = 1, line = 2, cex = 0.75)
+```
+
+As expected, Europe and the Scandinavian countries have the highest share of nuclear energy, while it is almost nonexistent in poorer and less developed regions of the world.
+
+```{r, message=FALSE}
+#Map 2: Energy Consumption per Capita 
+map2 <- mapCountryData(map_data,
+                       nameColumnToPlot = "energy_per_capita",
+                       mapTitle = "Energy Consumption per Capita (2020)",
+                       #catMethod = "pretty", #  space the breakpoints based on the range of our data
+                       colourPalette = "diverging",
+                       addLegend = TRUE)
+mtext("Energy Consumption per Capita (kWh)", side = 1, line = 2, cex = 0.75)
+```
+
+The first clear observation is the stark contrast in energy use between the richer and poorer parts of the world, with Africa, Asia, and South America significantly behind.
+Another surprising finding is that Europe consumes less energy than North America, Russia, Australia, and Saudi Arabia. While we only speculate at this time, one possible explanation is that Europe experiences a milder climate, unlike the other regions which face more extreme temperatures—either very hot or very cold—which likely increases their energy demands.
+
+For the third graph we will load a new data source, and create a new metric
+```{r, message=FALSE}
+gdp_file_name = "gdp_per_capita.csv" # can be downloaded from this link: https://data.worldbank.org/indicator/NY.GDP.PCAP.CD
+
+gdp_per_capita_2020 = read_csv(paste0(my_path, gdp_file_name)) %>%
+  rename_all(tolower) %>%
+  select(
+    country_code = `country code`, 
+    country = `country name`, 
+    gdp_per_capita = `2020_gdp_per_capita`
+  )
+
+joined_data <- data_2020 %>%
+  left_join(gdp_per_capita_2020, by = c("iso_code" = "country_code")) %>%
+  mutate(
+    energy_to_gdp_ratio = if_else(
+      is.na(gdp_per_capita) | is.na(energy_per_capita) | gdp_per_capita == 0 | energy_per_capita == 0,
+      0,
+      energy_per_capita/gdp_per_capita),
+    
+    adjusted_energy_to_gdp_ratio = case_when(
+      energy_to_gdp_ratio <= 1.5 ~ energy_to_gdp_ratio,
+      energy_to_gdp_ratio <= 3 ~ 2,
+      energy_to_gdp_ratio <= 5 ~ 3,
+      energy_to_gdp_ratio > 5 ~ 4,
+      TRUE ~ 0),
+    
+  ) %>%
+  rename(country = country.x) %>%
+  select(-country.y)
+
+map_data2 <- joinCountryData2Map(joined_data,                             # Join to map using the built in function
+                                joinCode = "NAME",
+                                nameJoinColumn = "country",
+                                verbose = FALSE)
+
+#Map 3: Energy Consumption per capita 
+map3 <- mapCountryData(map_data2,
+                       nameColumnToPlot = "adjusted_energy_to_gdp_ratio",
+                       mapTitle = "Energy to GDP ratio (per capita, 2020)",
+                       catMethod = "pretty", #  space the breakpoints based on the range of our data
+                       colourPalette = "diverging",
+                       addLegend = TRUE)
+mtext("Energy to GDP ratio (adjusted)", side = 1, line = 2, cex = 0.75)
+```
+
+We created this metric to explore whether countries are using more or less energy than we’d expect based on their economic status. Specifically, we calculate: energy per capita  / GDP per capita
+
+The motivation for this came from an earlier finding: Europe consumes less energy per capita than other wealthy regions.
+We wanted to understand if this was just about income, or if Europe was genuinely more efficient in how it uses energy. 
+
+This metric helps adjust energy use by considering the country’s economic structure.
+Countries with heavy industry or production may use more energy, which doesn’t directly reflect how much energy regular people consume.
+By comparing energy use to wealth, this metric aims to highlight energy consumption beyond just economic output, giving a better sense of how much energy is used by society itself, not just by industry.
+
+Most big European countries have an energy-to-GDP ratio between 0.7 and 0.9, which tells us they use relatively less energy for each dollar they produce. In contrast, the US and Canada have much higher ratios—1.14 and 2.3—showing they consume significantly more energy for their economic output. This difference paints a picture of how lifestyle, industrial choices, and climate shape energy use, with Europe’s milder weather and possibly more service-driven economies leading to lower energy demand compared to the energy-hungry North American neighbors.
+
+
+# 6
+## A
+We will filter the dataset to include only global data from 1985 onward, then calculate the year-over-year percentage change in "primary energy consumption" to measure how it changes every year. Then we’ll plot these changes over time to visualize global trends.
+
+```{r, warning=FALSE}
+# Filter dataset: only World, years from 1985 onwards
+world_energy <- data %>%
+  filter(country == "World", year > 1985) %>%
+  select(year, primary_energy_consumption) %>%
+  arrange(year) %>%
+  mutate(
+    perc_change  = 100 * (primary_energy_consumption - lag(primary_energy_consumption)) / lag(primary_energy_consumption),
+    change_color = if_else( is.na(lead(perc_change)) | lead(perc_change) >= 0,"Increase", "Decrease"))
+
+# Plot
+ggplot(world_energy, aes(x = year, y = perc_change, color = change_color, group = 1)) +
+  geom_line(size = 1) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray40") +  # line at y = 0
+  scale_color_manual(values = c("Increase" = "steelblue", "Decrease" = "red")) +
+  scale_x_continuous(breaks = seq(1990, max(world_energy$year), 5)) +
+  labs(
+    title = "Year-over-Year Percentage Change in Global Primary Energy Consumption",
+    x = "Year",
+    y = "Percentage Change",
+    color = "Consumption of Global Primary Energy"
+  ) +
+  scale_y_continuous(labels = scales::label_number(suffix = "%")) +
+  theme_minimal()
+
+```
+
+The graph shows that the world’s energy use usually goes up every year.
+But there are a few years where this trend changes, and energy use reduce. Two big falls happened in 2008, during the global financial crisis (Subprime) and in 2020, when the COVID crisis caused a sharp fall in energy use around the world.These two crisis are the only years when the change of energy use is negative. 
+
+## B
+We will create a function to calculate the smoothed year-over-year percentage change in nuclear energy consumption for each country, using a 3-year moving average. Then, we’ll apply this function across all countries and identify the 5 largest negative changes to detect sharp declines in nuclear consumption.
+```{r, message=FALSE}
+# Function to compute 3-year smoothed % change in nuclear consumption for a country
+get_nuclear_changes <- function(country_name, dataset) {
+  dataset %>%
+    filter(country == country_name) %>%
+    arrange(year) %>%
+    select(country, year, nuclear_consumption) %>%
+    mutate(
+      yearly_pct_diff = 100 * (nuclear_consumption - lag(nuclear_consumption)) / lag(nuclear_consumption),
+      smoothed_diff = rollmean(yearly_pct_diff, k = 3, fill = NA, align = "right")
+    ) %>%
+    filter(!is.na(smoothed_diff)) %>%
+    select(country, year, smoothed_diff)
+}
+
+# Get list of all countries 
+countries_list <- data %>%
+  distinct(country) %>%
+  pull()
+
+
+# Loop through each country and activate the function on it
+trend_summary <- do.call(rbind, lapply(countries_list, function(cn) get_nuclear_changes(cn, data)))
+
+# Extract the top 5 largest declines
+largest_drops <- trend_summary %>%
+  arrange(smoothed_diff) %>%
+  slice(1:5)
+
+# Final output
+print(largest_drops)
+```
+The table shows the five biggest drops in nuclear energy use. Japan had the sharpest fall in 2012-2013 after the Fukushima disaster. Italy stopped using nuclear energy after a 1987 public vote, Brazil faced a major economic crisis in the early 1990s, and Pakistan's drop in 1978 likely followed the end of nuclear cooperation with Canada. We looked up each case online and found that these sharp declines were connected to local crises and policy shifts.
+
+## C
+We will visualize the nuclear energy consumption of Japan, but will build the code in general method to pick first place by itself. Then we will plot the graph according to instructions, with 5-year jumps on the scale to  highlight the trend and turningpoint.
+
+```{r, message=FALSE}
+
+# Get top drop info
+top_country <- largest_drops$country[1]
+top_year <- largest_drops$year[1]
+
+# Filter the data for the selected country starting from 1980
+plot_data <- data %>%
+  filter(country == top_country, year >= 1980)
+
+# Build custom x-axis breaks (5-year intervals + 2013 if needed)
+breaks <- seq(1980, max(plot_data$year, na.rm = TRUE), by = 5)
+if (!2023 %in% breaks) {
+  breaks <- sort(c(breaks, 2023))
+}
+
+# Plot
+ggplot(plot_data, aes(x = year, y = nuclear_consumption)) +
+  geom_line(color = "darkblue", size = 1) +
+  geom_vline(xintercept = top_year, linetype = "dashed", color = "red") +
+  scale_x_continuous(breaks = breaks) +
+  labs(title = paste("Nuclear Energy Consumption in", top_country),
+       subtitle = paste("Sharpest drop around", top_year),
+       x = "Year",
+       y = "Nuclear Consumption (TWh)") +
+  theme_minimal()
+```
+
+As mentioned before - In March 2011, Japan experienced a massive earthquake and tsunami, which caused the Fukushima nuclear accident — considered to be one of the worst in human history. As a result, Japan shut down most of its nuclear energy sources for the following two years. This led to a dramatic drop in nuclear energy use, with the sharpest "3 year window" fall started in 2012 and ended in 2014.
+
